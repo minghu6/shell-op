@@ -18,7 +18,7 @@ with open('requirements.txt') as f:
 
 def find_version():
     here = os.path.abspath(os.path.dirname(__file__))
-    there = os.path.join(here, '__init__.py')
+    there = os.path.join(here, 'shell_op', '__init__.py')
 
     version_file = codecs.open(there, 'r').read()
     version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_file, re.M)

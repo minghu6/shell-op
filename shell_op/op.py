@@ -6,20 +6,22 @@ import os
 import datetime
 import json
 import shutil
+import re
+import fnmatch
+import glob
+import tempfile
+import uuid
 
-from color import print_bold, print_warning, print_error
+from color import print_bold, print_warning, print_error, print_ok
 
 
 def operation_protocol(action):
-    action_name = action.__name__
-    print('action_name: ', action_name)
-    
     def _operation_protocol(self, *args, **kwargs):
         def full_filled_action():
             result = action(self, *args, **kwargs)
             self.write_log_back()
             return result
-    
+
         if self.batch_id:  # in a batch
             return full_filled_action()
         else:
@@ -54,7 +56,8 @@ class Op:
         if not os.path.exists(self.log_path):
             return {
                 'undo': [],
-                'redo': []
+                'redo': [],
+                'skip': []
             }
 
         with open(self.log_path) as fr:
@@ -62,7 +65,7 @@ class Op:
     
     def write_log_back(self):
         with open(self.log_path, 'w') as fw:
-            json.dump(self.log_dict, fw)
+            json.dump(self.log_dict, fw, indent=2)
 
     @staticmethod
     def gen_batch_id():
@@ -106,8 +109,55 @@ class Op:
         self.do_mv(src, dst)
 
     def do_mv(self, full_src, full_dst):
-        os.makedirs(full_dst, exist_ok=True)
-        shutil.move(full_src, full_dst)
+        os.makedirs(os.path.dirname(full_dst), exist_ok=True)
+        if os.path.basename(full_src) == os.path.basename(self.log_path):
+            print_warning('found {0}, skip it'.format(full_src))
+        try:
+            shutil.move(full_src, full_dst)
+        except shutil.Error as ex:
+            print_error(ex)
+            print_error('skip')
+
+    @operation_protocol
+    def rm(self, *patterns, recursive=False):
+        paths = []
+        for pattern in patterns:
+            for path in glob.glob(pattern, recursive=True):
+                paths.append(path)
+
+        tmp_dir = tempfile.gettempdir()
+        fn_prefix = int(datetime.datetime.now().timestamp() * 1_000_000)
+        self.do_rm(paths, tmp_dir=tmp_dir, fn_prefix=fn_prefix, recursive=recursive)
+        
+        self.log_dict['undo'].append({
+            'batch_id': self.batch_id,
+            'action': 'rm',
+            'kwargs': {
+                'paths': paths,
+                'tmp_dir': tmp_dir,
+                'fn_prefix': fn_prefix,
+            }
+        })
+
+    @staticmethod
+    def undo_rm(paths, tmp_dir, fn_prefix):
+        for path in paths:
+            fn = '{0}_{1}'.format(fn_prefix, os.path.basename(path))
+            shutil.move(os.path.join(tmp_dir, fn), path)
+
+    @staticmethod
+    def redo_rm(paths, tmp_dir, fn_prefix):
+        for path in paths:
+            fn = '{0}_{1}'.format(fn_prefix, os.path.basename(path))
+            shutil.move(path, os.path.join(tmp_dir, fn))
+
+    @staticmethod
+    def do_rm(paths, tmp_dir, fn_prefix, recursive=False):
+        for path in paths:
+            fn = '{0}_{1}'.format(fn_prefix, os.path.basename(path))
+            if not recursive and os.path.isdir(path):
+                raise Exception('deleted file {0} is directory'.format(path))
+            shutil.move(path, os.path.join(tmp_dir, fn))
 
     def undo(self):
         self._do('undo')
@@ -134,7 +184,7 @@ class Op:
             
             actions.append(action)
 
-        for action in actions:
+        for action in actions.copy():
             print_bold('try %s action: %s ' % (do_type, action['action']), end='')
             for key, value in action['kwargs'].items():
                 print_bold('{0}: {1}'.format(key, value), end='')
@@ -146,14 +196,20 @@ class Op:
             except Exception as ex:
                 print_error(ex)
                 print_warning('skipping it')
+                self.log_dict['skip'].append(action)
+                actions.remove(action)
+            else:
+                print_ok('success')
 
         self.log_dict[other_do_type].extend(actions)
         self.log_dict[do_type] = self.log_dict[do_type][:-len(actions)]
         self.write_log_back()
 
 
+
 if __name__ == '__main__':
     with Op('test', r'H:\tmp\tianxing\vpn') as op:
         #op.mv('cert', 'cert2')
-        op.undo()
-        #op.redo()
+        #op.undo()
+        op.redo()
+        #op.rm(r'H:\tmp\tianxing\vpn\lsp', recursive=True)
